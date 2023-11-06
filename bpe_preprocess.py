@@ -50,6 +50,8 @@ def get_args():
     parser.add_argument('--vocab-src', default=None, type=str, help='path to dictionary')
     parser.add_argument('--vocab-trg', default=None, type=str, help='path to dictionary')
     parser.add_argument('--quiet', action='store_true', help='no logging')
+    parser.add_argument('--bpe-vocab-size', default=32000, type=int, help='Vocabulary size for BPE')
+
 
     return parser.parse_args()
 
@@ -61,7 +63,7 @@ def main(args):
 
      # Train SentencePiece model
     spm.SentencePieceTrainer.Train(
-        f'--input={args.train_prefix + "." + args.source_lang},{args.train_prefix + "." + args.target_lang} --model_prefix=m_bpe --vocab_size=32000 --model_type=bpe'
+    f'--input={args.train_prefix + "." + args.source_lang},{args.train_prefix + "." + args.target_lang} --model_prefix=m_bpe --vocab_size={args.bpe_vocab_size} --model_type=bpe'
     )
     sp = spm.SentencePieceProcessor()
     sp.Load('m_bpe.model')
