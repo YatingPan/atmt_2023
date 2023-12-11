@@ -10,7 +10,7 @@ from torch.serialization import default_restore_location
 from seq2seq import models, utils
 from seq2seq.data.dictionary import Dictionary
 from seq2seq.data.dataset import Seq2SeqDataset, BatchSampler
-from seq2seq.beam_diverse import BeamSearch, BeamSearchNode
+from seq2seq.beam_regularization import BeamSearch, BeamSearchNode
 
 
 def get_args():
@@ -32,9 +32,8 @@ def get_args():
     parser.add_argument('--beam-size', default=5, type=int, help='number of hypotheses expanded in beam search')
     # alpha hyperparameter for length normalization (described as lp in https://arxiv.org/pdf/1609.08144.pdf equation 14)
     parser.add_argument('--alpha', default=0.0, type=float, help='alpha for softer length normalization')
-
-    parser.add_argument('--gamma', default=0.0, type=float, help='gamma for diverse translations')
-
+    # add lambda for regularization
+    parser.add_argument('--lambda_reg', default=0.5, type=float, help='lambda value for squared regularization')
     return parser.parse_args()
 
 
@@ -122,8 +121,8 @@ def main(args):
                 node = BeamSearchNode(searches[i], emb, lstm_out, final_hidden, final_cell,
                                       mask, torch.cat((go_slice[i], next_word)), log_p, 1)
                 # __QUESTION 3: Why do we add the node with a negative score?
-                rank = j # The initial rank is simply the index
-                searches[i].add(-node.eval_diverse(args.gamma, rank, args.alpha), node)
+                node.update(log_p)  # Update the node with the new log probability
+                searches[i].add(-node.eval(args.alpha, args.lambda_reg), node)
 
         #import pdb;pdb.set_trace()
         # Start generating further tokens until max sentence length reached
@@ -155,7 +154,6 @@ def main(args):
 
             # Create number of beam_size next nodes for every current node
             for i in range(log_probs.shape[0]):
-                child_nodes = []
                 for j in range(args.beam_size):
 
                     best_candidate = next_candidates[i, :, j]
@@ -173,27 +171,26 @@ def main(args):
 
                     # __QUESTION 4: How are "add" and "add_final" different? 
                     # What would happen if we did not make this distinction?
-                    
-                    # Create all child nodes first without adding them to the beam
-                    node = BeamSearchNode(
-                        search, node.emb, node.lstm_out, node.final_hidden,
-                        node.final_cell, node.mask, torch.cat((prev_words[i][0].view([1]), next_word)),
-                        node.logp + log_p, node.length + 1
-                    )
-                    child_nodes.append(node)
-                
-                # Sort child nodes based on their log probabilities (higher is better)
-                child_nodes.sort(key=lambda node: -node.logp)
 
-                # Add child nodes to the beam with their respective ranks
-                for rank, node in enumerate(child_nodes):
                     # Store the node as final if EOS is generated
                     if next_word[-1] == tgt_dict.eos_idx:
-                        search.add_final(-node.eval_diverse(args.gamma, rank, args.alpha), node)
+                        node = BeamSearchNode(
+                            search, node.emb, node.lstm_out, node.final_hidden,
+                            node.final_cell, node.mask, torch.cat((prev_words[i][0].view([1]),
+                            next_word)), node.logp, node.length
+                            )
+                        node.update(log_p)  # Update the node with the new log probability
+                        search.add_final(-node.eval(args.alpha, args.lambda_reg), node)
 
                     # Add the node to current nodes for next iteration
                     else:
-                        search.add(-node.eval_diverse(args.gamma, rank, args.alpha), node)
+                        node = BeamSearchNode(
+                            search, node.emb, node.lstm_out, node.final_hidden,
+                            node.final_cell, node.mask, torch.cat((prev_words[i][0].view([1]),
+                            next_word)), node.logp + log_p, node.length + 1
+                            )
+                        node.update(log_p)  # Update the node with the new log probability
+                        search.add(-node.eval(args.alpha, args.lambda_reg), node)
 
             # #import pdb;pdb.set_trace()
             # __QUESTION 5: What happens internally when we prune our beams?
@@ -202,25 +199,11 @@ def main(args):
                 search.prune()
 
         # Segment into sentences
-        n_best_sents = [search.get_n_best(n=3) for search in searches] #?
-        decoded_batches = []
-
-        for n_best in n_best_sents:
-            decoded_batch = torch.stack([node[1].sequence[1:].cpu() for node in n_best])  # Extract the sequence and stack
-            decoded_batches.append(decoded_batch)
-
-        output_sentences = []
-        for batch in decoded_batches:
-            for row in range(batch.shape[0]):
-                sent = batch[row, :]
-                first_eos = np.where(sent == tgt_dict.eos_idx)[0]
-                if len(first_eos) > 0:
-                    output_sentences.append(sent[:first_eos[0]])
-                else:
-                    output_sentences.append(sent)
+        best_sents = torch.stack([search.get_best()[1].sequence[1:].cpu() for search in searches])
+        decoded_batch = best_sents.numpy()
         #import pdb;pdb.set_trace()
 
-        # output_sentences = [decoded_batch[row, :] for row in range(decoded_batch.shape[0])]
+        output_sentences = [decoded_batch[row, :] for row in range(decoded_batch.shape[0])]
 
         # __QUESTION 6: What is the purpose of this for loop?
         temp = list()
@@ -235,8 +218,15 @@ def main(args):
         # Convert arrays of indices into strings of words
         output_sentences = [tgt_dict.string(sent) for sent in output_sentences]
 
-        for ii, sent in enumerate(output_sentences):
-            all_hyps[int(sample['id'].data[ii])] = sent
+        # Assuming all_hyps is intended to be a dictionary with sample IDs as keys and sentences as values
+        for batch, sample_ids in zip(decoded_batches, test_loader):
+            for row, sample_id in zip(batch, sample_ids['id'].data):
+                sent = batch[row, :]
+                first_eos = np.where(sent == tgt_dict.eos_idx)[0]
+            i   if len(first_eos) > 0:
+                    sent = sent[:first_eos[0]]
+        a       all_hyps[int(sample_id)] = tgt_dict.string(sent)
+
 
 
     # Write to file

@@ -36,9 +36,10 @@ class BeamSearch(object):
             nodes.append((node[0], node[2]))
         return nodes
 
-    def get_n_best(self, n=3):
-        """ Returns n best nodes based on the lowest negative log probability """
-        # Merge EOS paths and those that were stopped by max sequence length
+    def get_best(self):
+        """ Returns final node with the lowest negative log probability """
+        # Merge EOS paths and those that were stopped by
+        # max sequence length (still in nodes)
         merged = PriorityQueue()
         for _ in range(self.final.qsize()):
             node = self.final.get()
@@ -48,13 +49,10 @@ class BeamSearch(object):
             node = self.nodes.get()
             merged.put(node)
 
-        # Extract the top N nodes
-        best_nodes = []
-        for _ in range(min(n, merged.qsize())):
-            node = merged.get()
-            best_nodes.append((node[0], node[2]))
-        return best_nodes
+        node = merged.get()
+        node = (node[0], node[2])
 
+        return node
 
     def prune(self):
         """ Removes all nodes but the beam_size best ones (lowest neg log prob) """
@@ -85,7 +83,17 @@ class BeamSearchNode(object):
 
         self.search = search
 
-    # def eval(self, alpha=0.0):
+        self.regularization_term = 0  # add this to store the squared sum
+
+    def update(self, new_log_prob):
+        """ Updates the node with a new log probability """
+        # Square the negative of new_log_prob and add to the regularization term
+        # new_log_prob: log probability of the new word being added at the current step
+        self.regularization_term += (-new_log_prob)**2  # #ut(y) = − log pθ(y|x, y<t), then ut(yt)^2
+        # Add the new log probability to the cumulative log probability
+        self.logp += new_log_prob # sum up to get R(y)
+
+    def eval(self, alpha=0.0, lambda_reg = 0.5):
         """ Returns score of sequence up to this node 
 
         params: 
@@ -95,12 +103,6 @@ class BeamSearchNode(object):
             14 as lp), default setting of 0.0 has no effect
         
         """
-    #    normalizer = (5 + self.length)**alpha / (5 + 1)**alpha
-    #    return self.logp / normalizer
-
-    def eval_diverse(self, gamma, rank, alpha=0.0):
-        """ New scoring function for diverse beam search """
-        normalizer = (5 + self.length)** alpha / (5 + 1)** alpha
-        penalty = gamma * rank  # yk'
-        return (self.logp / normalizer) - penalty  # -yk'
-   
+        normalizer = (5 + self.length)**alpha / (5 + 1)**alpha
+        # return self.logp / normalizer
+        return self.logp / normalizer - lambda_reg * self.regularization_term  # (log pθ(y|x) − λ · R(y))
