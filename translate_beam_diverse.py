@@ -32,9 +32,8 @@ def get_args():
     parser.add_argument('--beam-size', default=5, type=int, help='number of hypotheses expanded in beam search')
     # alpha hyperparameter for length normalization (described as lp in https://arxiv.org/pdf/1609.08144.pdf equation 14)
     parser.add_argument('--alpha', default=0.0, type=float, help='alpha for softer length normalization')
-
-    parser.add_argument('--gamma', default=0.0, type=float, help='gamma for diverse translations')
-
+    
+    parser.add_argument('--gamma', default=0.5, type=float, help='gamma value for diverse translation experiments')
     return parser.parse_args()
 
 
@@ -75,6 +74,9 @@ def main(args):
     # Iterate over the test set
     all_hyps = {}
     for i, sample in enumerate(progress_bar):
+
+        # Initialize sentence index for the current batch
+        sent_idx = 0
 
         # Create a beam search object or every input sentence in batch
         batch_size = sample['src_tokens'].shape[0]
@@ -122,7 +124,8 @@ def main(args):
                 node = BeamSearchNode(searches[i], emb, lstm_out, final_hidden, final_cell,
                                       mask, torch.cat((go_slice[i], next_word)), log_p, 1)
                 # __QUESTION 3: Why do we add the node with a negative score?
-                rank = j # The initial rank is simply the index
+                # Inside the main loop, for each node
+                rank = j  # j is the index in the current beam
                 searches[i].add(-node.eval_diverse(args.gamma, rank, args.alpha), node)
 
         #import pdb;pdb.set_trace()
@@ -155,7 +158,6 @@ def main(args):
 
             # Create number of beam_size next nodes for every current node
             for i in range(log_probs.shape[0]):
-                child_nodes = []
                 for j in range(args.beam_size):
 
                     best_candidate = next_candidates[i, :, j]
@@ -171,28 +173,27 @@ def main(args):
                     node = nodes[i]
                     search = node.search
 
+                    rank = j
+
                     # __QUESTION 4: How are "add" and "add_final" different? 
                     # What would happen if we did not make this distinction?
-                    
-                    # Create all child nodes first without adding them to the beam
-                    node = BeamSearchNode(
-                        search, node.emb, node.lstm_out, node.final_hidden,
-                        node.final_cell, node.mask, torch.cat((prev_words[i][0].view([1]), next_word)),
-                        node.logp + log_p, node.length + 1
-                    )
-                    child_nodes.append(node)
-                
-                # Sort child nodes based on their log probabilities (higher is better)
-                child_nodes.sort(key=lambda node: -node.logp)
 
-                # Add child nodes to the beam with their respective ranks
-                for rank, node in enumerate(child_nodes):
                     # Store the node as final if EOS is generated
                     if next_word[-1] == tgt_dict.eos_idx:
+                        node = BeamSearchNode(
+                            search, node.emb, node.lstm_out, node.final_hidden,
+                            node.final_cell, node.mask, torch.cat((prev_words[i][0].view([1]),
+                            next_word)), node.logp, node.length
+                            )
                         search.add_final(-node.eval_diverse(args.gamma, rank, args.alpha), node)
 
                     # Add the node to current nodes for next iteration
                     else:
+                        node = BeamSearchNode(
+                            search, node.emb, node.lstm_out, node.final_hidden,
+                            node.final_cell, node.mask, torch.cat((prev_words[i][0].view([1]),
+                            next_word)), node.logp + log_p, node.length + 1
+                            )
                         search.add(-node.eval_diverse(args.gamma, rank, args.alpha), node)
 
             # #import pdb;pdb.set_trace()
@@ -202,48 +203,77 @@ def main(args):
                 search.prune()
 
         # Segment into sentences
-        n_best_sents = [search.get_n_best(n=3) for search in searches] #?
-        decoded_batches = []
-
-        for n_best in n_best_sents:
-            decoded_batch = torch.stack([node[1].sequence[1:].cpu() for node in n_best])  # Extract the sequence and stack
-            decoded_batches.append(decoded_batch)
-
-        output_sentences = []
-        for batch in decoded_batches:
-            for row in range(batch.shape[0]):
-                sent = batch[row, :]
-                first_eos = np.where(sent == tgt_dict.eos_idx)[0]
-                if len(first_eos) > 0:
-                    output_sentences.append(sent[:first_eos[0]])
-                else:
-                    output_sentences.append(sent)
-        #import pdb;pdb.set_trace()
-
-        # output_sentences = [decoded_batch[row, :] for row in range(decoded_batch.shape[0])]
-
+        # best_sents = torch.stack([search.get_best()[1].sequence[1:].cpu() for search in searches])
+        # decoded_batch = best_sents.numpy()
+        # Adjusting the segment into sentences part
         # __QUESTION 6: What is the purpose of this for loop?
-        temp = list()
-        for sent in output_sentences:
-            first_eos = np.where(sent == tgt_dict.eos_idx)[0]
-            if len(first_eos) > 0:
-                temp.append(sent[:first_eos[0]])
-            else:
-                temp.append(sent)
-        output_sentences = temp
+        #temp = list()
+        #for sent in output_sentences:
+        #    first_eos = np.where(sent == tgt_dict.eos_idx)[0]
+        #    if len(first_eos) > 0:
+        #        temp.append(sent[:first_eos[0]])
+        #    else:
+        #        temp.append(sent)
+        #output_sentences = temp
 
         # Convert arrays of indices into strings of words
-        output_sentences = [tgt_dict.string(sent) for sent in output_sentences]
+        #output_sentences = [tgt_dict.string(sent) for sent in output_sentences]
 
-        for ii, sent in enumerate(output_sentences):
-            all_hyps[int(sample['id'].data[ii])] = sent
+        #for ii, sent in enumerate(output_sentences):
+        #    all_hyps[int(sample['id'].data[ii])] = sent
 
+        # here i is the batch index in the orignal code
+        for search in searches:
+            n_best_nodes = search.get_n_best(n=3)
+            all_hyps[int(sample['id'].data[sent_idx])] = []
+            for score, node in n_best_nodes:
+                sentence = node.sequence[1:].cpu().numpy()
+                first_eos = np.where(sentence == tgt_dict.eos_idx)[0]
+                if len(first_eos) > 0:
+                    sentence = sentence[:first_eos[0]]
+                # Print the sentence array
+                print("Sentence array:", sentence)
+                translation = tgt_dict.string(sentence)
+                # Print the translation string
+                print("Translation string:", translation)
+                all_hyps[int(sample['id'].data[sent_idx])].append(translation)
+            
+            # Increment the sentence index after processing all hypotheses for the sentence
+            sent_idx += 1
+
+        # Ensure that sent_idx does not exceed the number of sentences in the batch
+        assert sent_idx <= len(sample['id'].data)
 
     # Write to file
+    #if args.output is not None:
+    #    with open(args.output, 'w') as out_file:
+    #        for sent_id in range(len(all_hyps.keys())):
+    #            out_file.write(all_hyps[sent_id] + '\n')
+    # Write to file
+
+    # the all_hyps dict should be like:
+    #Sentence ID: 0
+    #Translation 1: First best translation of sentence 1
+    #Translation 2: Second best translation of sentence 1
+    #Translation 3: Third best translation of sentence 1
+
+    # Print the contents of all_hyps to a separate file for inspection
+    inspection_file = "inspection_all_hyps.txt"
+    with open(inspection_file, 'w') as inspect_file:
+        for sent_id, translations in all_hyps.items():
+            inspect_file.write(f"Sentence ID: {sent_id}\n")
+            for idx, translation in enumerate(translations):
+                inspect_file.write(f"  Translation {idx + 1}: {translation}\n")
+            inspect_file.write("\n")
+
     if args.output is not None:
         with open(args.output, 'w') as out_file:
-            for sent_id in range(len(all_hyps.keys())):
-                out_file.write(all_hyps[sent_id] + '\n')
+            for sent_id in sorted(all_hyps.keys()):
+                translations = all_hyps[sent_id]
+                for translation in translations:
+                    # Write the whole translation on one line
+                    out_file.write(translation.strip() + '\n')
+                out_file.write('\n') # Optional: Adds a blank line between groups of N-best translations
 
 
 if __name__ == '__main__':

@@ -1,0 +1,13 @@
+bash scripts/postprocess.sh assignments/05/diverse/translations/translations_beam10_gamma20_alpha10_N3_top2.txt assignments/05/beam_size_experiments/translations.p/translations_beam10_gamma20_alpha10_N3_top2.p.txt en
+{
+ "name": "BLEU",
+ "score": 19.4,
+ "signature": "nrefs:1|case:mixed|eff:no|tok:13a|smooth:exp|version:2.0.0",
+ "verbose_score": "47.9/24.7/14.4/8.3 (BP = 1.000 ratio = 1.226 hyp_len = 4771 ref_len = 3892)",
+ "nrefs": "1",
+ "case": "mixed",
+ "eff": "no",
+ "tok": "13a",
+ "smooth": "exp",
+ "version": "2.0.0"
+}

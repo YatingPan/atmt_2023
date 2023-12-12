@@ -218,15 +218,8 @@ def main(args):
         # Convert arrays of indices into strings of words
         output_sentences = [tgt_dict.string(sent) for sent in output_sentences]
 
-        # Assuming all_hyps is intended to be a dictionary with sample IDs as keys and sentences as values
-        for batch, sample_ids in zip(decoded_batches, test_loader):
-            for row, sample_id in zip(batch, sample_ids['id'].data):
-                sent = batch[row, :]
-                first_eos = np.where(sent == tgt_dict.eos_idx)[0]
-            i   if len(first_eos) > 0:
-                    sent = sent[:first_eos[0]]
-        a       all_hyps[int(sample_id)] = tgt_dict.string(sent)
-
+        for ii, sent in enumerate(output_sentences):
+            all_hyps[int(sample['id'].data[ii])] = sent
 
 
     # Write to file
